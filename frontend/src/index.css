@@ -1,0 +1,116 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+@import "@xyflow/react/dist/style.css";
+
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* Base tailwind resets / adjustments if needed */
+
+/* ===== Active Category Button ===== */
+.cat-btn.active {
+    background-color: #EEF2FF;
+    color: #4F46E5;
+    box-shadow: inset 0 0 0 2px #C7D2FE;
+}
+
+/* ===== Block Cards in Sidebar ===== */
+.block-card {
+    border-radius: 12px;
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: grab;
+    transition: all 0.15s ease;
+    border: 1.5px solid transparent;
+}
+.block-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+.block-card:active {
+    cursor: grabbing;
+    transform: scale(0.98);
+}
+.block-card .badge {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Block card color schemes */
+.block-card.blue { background: #EFF6FF; border-color: #BFDBFE; }
+.block-card.blue .badge { background: #BFDBFE; color: #1E40AF; }
+
+.block-card.purple { background: #F5F3FF; border-color: #DDD6FE; }
+.block-card.purple .badge { background: #DDD6FE; color: #5B21B6; }
+
+.block-card.green { background: #ECFDF5; border-color: #A7F3D0; }
+.block-card.green .badge { background: #A7F3D0; color: #065F46; }
+
+.block-card.amber { background: #FFFBEB; border-color: #FDE68A; }
+.block-card.amber .badge { background: #FDE68A; color: #92400E; }
+
+.block-card.rose { background: #FFF1F2; border-color: #FECDD3; }
+.block-card.rose .badge { background: #FECDD3; color: #9F1239; }
+
+/* ===== Active Category Button ===== */
+.workspace-block .wb-body {
+    padding: 12px 14px;
+    font-size: 12px;
+    color: #64748B;
+}
+.workspace-block .wb-body label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: #475569;
+    margin-bottom: 4px;
+    margin-top: 8px;
+}
+.workspace-block .wb-body label:first-child {
+    margin-top: 0;
+}
+
+/* Color-coded headers in React Flow custom nodes */
+.blue-header { background: #EFF6FF; }
+.dark .blue-header { background: rgba(30, 64, 175, 0.2); }
+.purple-header { background: #F5F3FF; }
+.dark .purple-header { background: rgba(91, 33, 182, 0.2); }
+.green-header { background: #ECFDF5; }
+.dark .green-header { background: rgba(6, 95, 70, 0.2); }
+.amber-header { background: #FFFBEB; }
+.dark .amber-header { background: rgba(146, 64, 14, 0.2); }
+.rose-header { background: #FFF1F2; }
+.dark .rose-header { background: rgba(159, 18, 57, 0.2); }
+
+/* ===== Custom scrollbar ===== */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+
+/* ===== Widget styling inside workspace blocks ===== */
+.wb-body select, .wb-body input[type="range"] {
+    width: 100%;
+    font-size: 11px;
+    border: 1px solid #E2E8F0;
+    border-radius: 6px;
+    padding: 4px 6px;
+    background: #F8FAFC;
+    color: #334155;
+}
+.wb-body input[type="range"] {
+    border: none;
+    padding: 0;
+    accent-color: #6366F1;
+}
