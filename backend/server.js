@@ -1,8 +1,8 @@
-require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg');
+const sqlite3 = require('sqlite3').verbose();
 const bodyParser = require('body-parser');
+const path = require('path');
 
 const app = express();
 const PORT = 3000;
@@ -10,17 +10,11 @@ const PORT = 3000;
 app.use(cors());
 app.use(bodyParser.json());
 
-// PostgreSQL Connection Pool
-const pool = new Pool({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-});
+const dbPath = path.resolve(__dirname, 'database.db');
+const db = new sqlite3.Database(dbPath);
 
 app.get('/', (req, res) => {
-    res.send('<h1>✅ Robo Learn AI Backend (PostgreSQL) is Running!</h1>');
+    res.send('<h1>✅ Robo Learn AI Backend (SQLite Mode) is Running!</h1>');
 });
 
 // ============================================
@@ -28,96 +22,82 @@ app.get('/', (req, res) => {
 // ============================================
 
 // 1. Get all projects
-app.get('/api/projects', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT * FROM projects ORDER BY updated_at DESC');
-        res.json(result.rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+app.get('/api/projects', (req, res) => {
+    const sql = `SELECT * FROM projects ORDER BY updated_at DESC`;
+    db.all(sql, [], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
+    });
 });
 
-// 2. Save Canvas (Smart Save)
-app.post('/api/save-flow', async (req, res) => {
+// 2. Save Canvas
+app.post('/api/save-flow', (req, res) => {
     const { name, flow_data, project_id } = req.body;
     
     if (!name || !flow_data) return res.status(400).json({ error: 'Name and flow_data are required' });
 
-    try {
+    db.serialize(() => {
         let finalProjectId = project_id;
 
-        // If no project_id, create a new project
+        const handleInsertFlow = (pId) => {
+            const sqlFlow = `INSERT INTO canvas_flows (project_id, flow_data) VALUES (?, ?)`;
+            const dataString = typeof flow_data === 'object' ? JSON.stringify(flow_data) : flow_data;
+            db.run(sqlFlow, [pId, dataString], function(err) {
+                if (err) return res.status(500).json({ error: err.message });
+                res.json({ success: true, project_id: pId, flow_id: this.lastID });
+            });
+        };
+
         if (!finalProjectId) {
-            const projectRes = await pool.query(
-                'INSERT INTO projects (name) VALUES ($1) RETURNING id', 
-                [name]
-            );
-            finalProjectId = projectRes.rows[0].id;
+            db.run(`INSERT INTO projects (name) VALUES (?)`, [name], function(err) {
+                if (err) return res.status(500).json({ error: err.message });
+                finalProjectId = this.lastID;
+                handleInsertFlow(finalProjectId);
+            });
         } else {
-            // Update project timestamp
-            await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [finalProjectId]);
+            db.run(`UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [finalProjectId]);
+            handleInsertFlow(finalProjectId);
         }
-
-        // Insert new flow version
-        // JSONB handles objects directly in PG
-        const flowRes = await pool.query(
-            'INSERT INTO canvas_flows (project_id, flow_data) VALUES ($1, $2) RETURNING id',
-            [finalProjectId, flow_data]
-        );
-
-        res.json({ success: true, project_id: finalProjectId, flow_id: flowRes.rows[0].id });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
 });
 
-// 3. Get latest flow for a project
-app.get('/api/projects/:id/flow', async (req, res) => {
-    try {
-        const result = await pool.query(
-            'SELECT * FROM canvas_flows WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1',
-            [req.params.id]
-        );
-        if (result.rows.length === 0) return res.status(404).json({ error: 'Flow not found' });
-        res.json(result.rows[0]);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+// 3. Get latest flow
+app.get('/api/projects/:id/flow', (req, res) => {
+    const sql = `SELECT * FROM canvas_flows WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`;
+    db.get(sql, [req.params.id], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(404).json({ error: 'Flow not found' });
+        res.json({ ...row, flow_data: JSON.parse(row.flow_data) });
+    });
 });
 
 // ============================================
 // API: Training Sessions
 // ============================================
 
-app.post('/api/train/start', async (req, res) => {
+app.post('/api/train/start', (req, res) => {
     const { project_id, hyperparams } = req.body;
+    const sql = `INSERT INTO training_sessions (project_id, status, hyperparameters, start_time) VALUES (?, 'training', ?, CURRENT_TIMESTAMP)`;
+    const paramsString = JSON.stringify(hyperparams || {});
     
-    try {
-        const result = await pool.query(
-            'INSERT INTO training_sessions (project_id, status, hyperparameters, start_time) VALUES ($1, $2, $3, CURRENT_TIMESTAMP) RETURNING id',
-            [project_id, 'training', hyperparams || {}]
-        );
-        
+    db.run(sql, [project_id, paramsString], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
         res.json({ 
             success: true, 
-            session_id: result.rows[0].id, 
-            message: 'Training session started in PostgreSQL (Phase 3 ready)' 
+            session_id: this.lastID, 
+            message: 'Training session started in SQLite Mode' 
         });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
 });
 
 // ============================================
 // Delete Project
 // ============================================
-app.delete('/api/projects/:id', async (req, res) => {
-    try {
-        await pool.query('DELETE FROM projects WHERE id = $1', [req.params.id]);
+app.delete('/api/projects/:id', (req, res) => {
+    db.run(`DELETE FROM projects WHERE id = ?`, [req.params.id], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
         res.json({ success: true, message: `Deleted project ${req.params.id}` });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
 });
 
 app.listen(PORT, () => {

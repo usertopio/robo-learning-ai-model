@@ -29,7 +29,9 @@ function AppContent() {
   const [currentProjectId, setCurrentProjectId] = useState<number | null>(null);
   const [blockCounter, setBlockCounter] = useState(0);
 
-  useEffect(() => { fetchWorkspaces(); }, []);
+  useEffect(() => { 
+    fetchWorkspaces();
+  }, []);
 
   const fetchWorkspaces = async () => {
     try {
@@ -277,25 +279,75 @@ function AppContent() {
             </div>
         </main>
 
-        {/* Right Panel (Mock UI like vanilla) */}
-        <aside className="w-[300px] bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col shrink-0 overflow-hidden transition-colors">
-             <div className="h-11 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-4">
-                <h3 className="text-sm font-bold text-slate-700 dark:text-slate-300 flex items-center gap-2">📊 Preview & Stats</h3>
-                <span className="flex items-center gap-1.5 text-xs">
+        {/* Right Panel (Database Inspector) */}
+        <aside className="w-[350px] bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col shrink-0 overflow-hidden transition-colors">
+             <div className="h-11 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-4 bg-slate-50 dark:bg-slate-900/50">
+                <h3 className="text-sm font-bold text-slate-700 dark:text-slate-300 flex items-center gap-2">🔍 DB Inspector</h3>
+                <span className="flex items-center gap-1.5 text-[10px]">
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Ready</span>
+                    <span className="text-emerald-600 dark:text-emerald-400 font-bold">Auto-Syncing</span>
                 </span>
             </div>
-            <div className="flex-1 overflow-y-auto p-3 space-y-3">
-                <div className="bg-slate-900 dark:bg-black rounded-xl overflow-hidden relative border-4 border-slate-800 dark:border-slate-900">
-                    <div className="h-[130px] flex items-center justify-center">
-                        <span className="text-slate-500 text-xs">Camera Output</span>
+            
+            <div className="flex-1 overflow-y-auto p-3 space-y-4">
+                
+                {/* 1. Table Projects */}
+                <div>
+                    <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center justify-between">
+                        Projects <span>({dbContent?.projects?.length || 0})</span>
+                    </h4>
+                    <div className="space-y-1.5">
+                        {dbContent?.projects?.length > 0 ? dbContent.projects.map((p: any) => (
+                            <div key={p.id} className="p-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-lg text-[10px]">
+                                <p className="font-bold text-slate-700 dark:text-slate-200 truncate">{p.name}</p>
+                                <p className="text-slate-400 opacity-70">ID: {p.id} · {p.updated_at}</p>
+                            </div>
+                        )) : <p className="text-[10px] text-slate-400 italic text-center py-2">No projects found</p>}
                     </div>
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                    <div className="bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/30 rounded-xl p-2.5 text-center"><p className="text-[10px] text-indigo-400 font-medium">🟦 Epochs</p><p className="text-lg font-bold text-indigo-700 dark:text-indigo-400">0 / 0</p></div>
-                    <div className="bg-rose-50 dark:bg-rose-900/20 border border-rose-100 dark:border-rose-800/30 rounded-xl p-2.5 text-center"><p className="text-[10px] text-rose-400 font-medium">🎯 Best Accuracy</p><p className="text-lg font-bold text-rose-600 dark:text-rose-400">0.0%</p></div>
+
+                {/* 2. Table Flows (Nodes/Edges count) */}
+                <div>
+                    <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center justify-between">
+                        Canvas Data <span>({dbContent?.flows?.length || 0})</span>
+                    </h4>
+                    <div className="space-y-1.5">
+                        {dbContent?.flows?.length > 0 ? dbContent.flows.slice(0, 5).map((f: any) => (
+                            <div key={f.id} className="p-2 bg-indigo-50/50 dark:bg-indigo-900/10 border border-indigo-100/50 dark:border-indigo-800/30 rounded-lg text-[10px]">
+                                <p className="font-bold text-indigo-600 dark:text-indigo-400">Flow Version {f.id}</p>
+                                <p className="text-slate-500">Project Ref: {f.project_id}</p>
+                                <code className="block mt-1 bg-white dark:bg-slate-900 p-1 rounded border border-indigo-100 dark:border-indigo-800/50 text-[9px]">
+                                    {JSON.parse(f.flow_data).nodes?.length} nodes · {JSON.parse(f.flow_data).edges?.length} edges
+                                </code>
+                            </div>
+                        )) : <p className="text-[10px] text-slate-400 italic text-center py-2">Empty canvas storage</p>}
+                    </div>
                 </div>
+
+                {/* 3. Table Sessions */}
+                <div>
+                    <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center justify-between">
+                        Sessions <span>({dbContent?.sessions?.length || 0})</span>
+                    </h4>
+                    <div className="space-y-1.5">
+                        {dbContent?.sessions?.length > 0 ? dbContent.sessions.map((s: any) => (
+                            <div key={s.id} className="p-2 bg-amber-50/50 dark:bg-amber-900/10 border border-amber-100/50 dark:border-amber-800/30 rounded-lg text-[10px]">
+                                <div className="flex justify-between font-bold">
+                                    <span className="text-amber-700 dark:text-amber-400">SESSION #{s.id}</span>
+                                    <span className="px-1.5 bg-amber-200 dark:bg-amber-800 rounded text-[8px] uppercase">{s.status}</span>
+                                </div>
+                                <p className="text-slate-500 mt-1">Start: {s.start_time}</p>
+                            </div>
+                        )) : <p className="text-[10px] text-slate-400 italic text-center py-2">No training sessions</p>}
+                    </div>
+                </div>
+
+            </div>
+            
+            <div className="p-4 bg-slate-50 dark:bg-slate-900/80 border-t border-slate-200 dark:border-slate-800">
+                <p className="text-[9px] text-slate-400 leading-relaxed italic">
+                    💡 This panel shows raw data directly from <b>SQLite</b> in real-time. It refreshes every 2 seconds.
+                </p>
             </div>
         </aside>
       </div>
