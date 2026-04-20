@@ -26,3 +26,15 @@ backend/.env
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# AI Weights
+*.pt
+*.onnx
+*.engine

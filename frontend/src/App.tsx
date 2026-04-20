@@ -10,6 +10,7 @@ import {
   addEdge, 
   ReactFlowProvider
 } from '@xyflow/react';
+import { io } from 'socket.io-client';
 import type { Connection, Edge, ReactFlowInstance, Node } from '@xyflow/react';
 import CustomNode from './CustomNode';
 import RobotStreamNode from './RobotStreamNode';
@@ -23,48 +24,96 @@ const nodeTypes = {
   'monitor-node': MonitorNode
 };
 
+// Initialize Socket.IO outside or in a ref to persist across re-renders
+const socket = io('http://localhost:3000');
+(window as any).socket = socket; // Expose globally for nodes
+
 function AppContent() {
+  // --- UI States ---
   const [activeCategory, setActiveCategory] = useState<'input' | 'model' | 'training' | 'output' | 'viz'>('input');
   const [isDark, setIsDark] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const settingsRef = useRef<HTMLDivElement>(null);
+
+  // --- Auth & User States ---
   const [user, setUser] = useState<any>(null);
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
-  
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+
+  // --- Flow States ---
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
-
-  const [savedWorkspaces, setSavedWorkspaces] = useState<any[]>([]);
-  const [currentProjectId, setCurrentProjectId] = useState<number | null>(null);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
-  const [blockCounter, setBlockCounter] = useState(0);
-  const [showSettings, setShowSettings] = useState(false);
+  const [currentProjectId, setCurrentProjectId] = useState<number | null>(null);
   const [loadingProjectId, setLoadingProjectId] = useState<number | null>(null);
+  const [blockCounter, setBlockCounter] = useState(1);
+  const [savedWorkspaces, setSavedWorkspaces] = useState<any[]>([]);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const [activeMonitorFrame, setActiveMonitorFrame] = useState<string | null>(null);
+
+  // --- AI & Stream States ---
+  const [isAiSystemRunning, setIsAiSystemRunning] = useState(false);
   const [monitorPoweredOn, setMonitorPoweredOn] = useState(false);
-  const settingsRef = useRef<HTMLDivElement>(null);
+  const [aiProcessedFrame, setAiProcessedFrame] = useState<string | null>(null);
+  const [activeMonitorFrame, setActiveMonitorFrame] = useState<string | null>(null);
+  const [frameHistory, setFrameHistory] = useState<string[]>([]);
+  const [targetClasses, setTargetClasses] = useState('person, dog, cat, car');
+  const [modelVariant, setModelVariant] = useState('YOLO11 Nano');
+  const [trainingProgress, setTrainingProgress] = useState({ epoch: 0, loss: 0, val_loss: 0, status: 'idle' });
 
-  // Monitor frame state listener
+  // --- Socket Sync Hook (Concept) ---
   useEffect(() => {
-    const handleFrame = (e: any) => {
-        if (monitorPoweredOn) setActiveMonitorFrame(e.detail);
-    };
-    const handlePower = (e: any) => {
-        setMonitorPoweredOn(e.detail.active);
-        if (!e.detail.active) setActiveMonitorFrame(null);
-    };
-    window.addEventListener('live-monitor-frame', handleFrame);
-    window.addEventListener('monitor-power-change', handlePower);
-    return () => {
-        window.removeEventListener('live-monitor-frame', handleFrame);
-        window.removeEventListener('monitor-power-change', handlePower);
-    };
-  }, [monitorPoweredOn]);
+    if (!socket) return;
 
-  // Auth States
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+    const handleConnect = () => console.log('✅ Connected to AI Server');
+    const handleStream = (image: string) => {
+      setAiProcessedFrame(image);
+      setFrameHistory(prev => [...prev.slice(-29), image]);
+    };
+    const handleTraining = (data: any) => {
+      setTrainingProgress(prev => data.status ? { ...prev, ...data } : { ...data, status: 'training' });
+    };
+    const handleWebcam = (image: string) => {
+      setActiveMonitorFrame(image);
+    };
+    const handleParams = (data: any) => {
+      if (data.label === 'Model Variant') setModelVariant(data.value);
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('stream_to_web', handleStream);
+    socket.on('ai_training_progress', handleTraining);
+    socket.on('ai_webcam_frame', handleWebcam);
+    socket.on('ai_params_sync', handleParams);
+
+    return () => {
+      socket.off('connect', handleConnect);
+      socket.off('stream_to_web', handleStream);
+      socket.off('ai_training_progress', handleTraining);
+      socket.off('ai_webcam_frame', handleWebcam);
+      socket.off('ai_params_sync', handleParams);
+    };
+  }, []);
+
+  // Sync flow topology
+  useEffect(() => {
+    socket.emit('flow_topology_update', { nodes, edges });
+  }, [nodes, edges]);
+
+  // Sync AI control params
+  useEffect(() => {
+    socket.emit('update_search_classes', targetClasses);
+    socket.emit('ai_system_toggle', { running: isAiSystemRunning });
+  }, [targetClasses, isAiSystemRunning]);
+
+  // Sync processing room
+  useEffect(() => {
+    if (monitorPoweredOn || isAiSystemRunning) {
+      socket.emit('join_robot_room', 'WEBCAM_PROCESSED');
+    }
+  }, [monitorPoweredOn, isAiSystemRunning]);
 
   useEffect(() => { 
     if (token) {
@@ -166,6 +215,7 @@ function AppContent() {
       setTimeout(() => setSaveStatus('idle'), 2500);
     } catch (e: any) { 
         console.error("Save error:", e);
+        alert(`❌ ป้องกันการบันทึก: ${e.message || 'โปรดลงชื่อเข้าใช้ (Login) ก่อนบันทึกงาน'}`);
         setSaveStatus('error');
         setTimeout(() => setSaveStatus('idle'), 3000);
     }
@@ -253,12 +303,19 @@ function AppContent() {
         y: event.clientY - reactFlowBounds.top,
       });
 
+      // screenToFlowPosition already handles all transformations
+      // Just center the node on the cursor position
+      const centeredPosition = {
+        x: position.x - 130,  // Half node width
+        y: position.y - 70,   // Half node height
+      };
+
       const newNode: Node = {
         id: `node_${blockCounter}`,
         type: defId === 'robot-stream' ? 'robot-stream' : 
               defId === 'webcam-input' ? 'webcam-stream' : 
               defId === 'live-monitor' ? 'monitor-node' : 'custom',
-        position,
+        position: centeredPosition,
         data: { def: JSON.parse(JSON.stringify(def)) },
       };
 
@@ -531,20 +588,86 @@ function AppContent() {
                     </div>
                     <div className="flex-1 overflow-y-auto p-5 space-y-4">
                         <div className="bg-slate-900 dark:bg-black rounded-2xl overflow-hidden aspect-video flex flex-col items-center justify-center border-4 border-slate-800 shadow-inner relative group">
-                            {(activeMonitorFrame && monitorPoweredOn) ? (
-                                <img src={activeMonitorFrame} alt="Live Monitor" className="w-full h-full object-cover" />
-                            ) : (
+                            {/* Layer 1: Raw webcam feed (always smooth) */}
+                            {(activeMonitorFrame && monitorPoweredOn) && (
+                                <img src={activeMonitorFrame} alt="Raw Feed" className="w-full h-full object-cover absolute inset-0" />
+                            )}
+                            {/* Layer 2: AI-processed frame with bounding boxes (overlays when available) */}
+                            {(aiProcessedFrame && isAiSystemRunning) && (
+                                <img src={aiProcessedFrame} alt="AI Live" className="w-full h-full object-cover absolute inset-0 z-10" />
+                            )}
+                            {/* Placeholder when nothing active */}
+                            {(!activeMonitorFrame || !monitorPoweredOn) && !aiProcessedFrame && (
                                 <div className="flex flex-col items-center gap-3 text-slate-500">
                                     <span className="text-4xl opacity-20">🖥️</span>
                                     <span className="text-[11px] font-bold tracking-tight uppercase opacity-60 px-3 py-1 bg-slate-800 rounded-md"> Monitor Inactive </span>
                                 </div>
                             )}
-                            <div className="absolute inset-0 bg-indigo-500/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+                            {/* AI active indicator */}
+                            {isAiSystemRunning && aiProcessedFrame && (
+                                <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5 bg-emerald-500/90 px-2 py-0.5 rounded-md shadow-lg">
+                                    <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span>
+                                    <span className="text-[9px] font-bold text-white tracking-wide">AI LIVE</span>
+                                </div>
+                            )}
+                            <div className="absolute inset-0 bg-indigo-500/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-30" />
                         </div>
+
+                        {/* Search / Filter Classes */}
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                                🔍 Filter Target Objects
+                            </label>
+                            <input 
+                                type="text"
+                                value={targetClasses}
+                                onChange={(e) => setTargetClasses(e.target.value)}
+                                placeholder="e.g. person, car, dog..."
+                                className="w-full text-[12px] font-medium border border-slate-200 dark:border-slate-700/80 rounded-xl px-4 py-2.5 bg-white dark:bg-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none transition-all shadow-sm"
+                            />
+                            <p className="text-[9px] text-slate-400 italic">Separate with commas to detect multiple objects.</p>
+                        </div>
+
                         <div className="grid grid-cols-2 gap-3 text-center pt-2">
-                            <div className="bg-white dark:bg-slate-800/80 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/80 shadow-sm"><p className="text-[11px] text-indigo-500 dark:text-indigo-400 font-bold uppercase tracking-wider mb-1">Epochs</p><p className="text-2xl font-black text-slate-800 dark:text-slate-100">0/0</p></div>
-                            <div className="bg-white dark:bg-slate-800/80 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/80 shadow-sm"><p className="text-[11px] text-orange-500 dark:text-orange-400 font-bold uppercase tracking-wider mb-1">mAP@50</p><p className="text-2xl font-black text-slate-800 dark:text-slate-100">0.0%</p></div>
+                            <div className="bg-white dark:bg-slate-800/80 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/80 shadow-sm">
+                                <p className="text-[11px] text-indigo-500 dark:text-indigo-400 font-bold uppercase tracking-wider mb-1">Epochs</p>
+                                <p className="text-2xl font-black text-slate-800 dark:text-slate-100">{trainingProgress.epoch}</p>
+                                {trainingProgress.status === 'training' && <p className="text-[10px] text-indigo-400 animate-pulse mt-1">Training...</p>}
+                                {trainingProgress.status === 'complete' && <p className="text-[10px] text-emerald-500 mt-1">Finished</p>}
+                            </div>
+                            <div className="bg-white dark:bg-slate-800/80 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/80 shadow-sm">
+                                <p className="text-[11px] text-orange-500 dark:text-orange-400 font-bold uppercase tracking-wider mb-1">Loss (Train)</p>
+                                <p className="text-2xl font-black text-slate-800 dark:text-slate-100">{trainingProgress.loss > 0 ? trainingProgress.loss.toFixed(4) : '0.00'}</p>
+                                <p className="text-[10px] text-slate-400 mt-1">Val: {trainingProgress.val_loss > 0 ? trainingProgress.val_loss.toFixed(4) : '0.00'}</p>
+                            </div>
+                            <div className="bg-white dark:bg-slate-800/80 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/80 shadow-sm">
+                                <p className="text-[11px] text-purple-500 dark:text-purple-400 font-bold uppercase tracking-wider mb-1">Model</p>
+                                <p className="text-lg font-black text-slate-800 dark:text-slate-100 truncate">{modelVariant.split(' ')[0]}</p>
+                                <p className="text-[9px] text-slate-400 mt-1">{modelVariant.includes('Nano') ? 'Ultra Fast' : modelVariant.includes('Small') ? 'Balanced' : modelVariant.includes('Medium') ? 'Accurate' : 'Professional'}</p>
+                            </div>
+                            <div className="bg-white dark:bg-slate-800/80 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/80 shadow-sm">
+                                <p className="text-[11px] text-cyan-500 dark:text-cyan-400 font-bold uppercase tracking-wider mb-1">Frames</p>
+                                <p className="text-2xl font-black text-slate-800 dark:text-slate-100">{frameHistory.length}</p>
+                                <p className="text-[10px] text-slate-400 mt-1">processed</p>
+                            </div>
                         </div>
+
+                        {/* Test Results Gallery */}
+                        {frameHistory.length > 0 && (
+                            <div className="space-y-2 pt-4">
+                                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                                    🎨 Test Results Gallery (Last 5)
+                                </label>
+                                <div className="grid grid-cols-5 gap-2">
+                                    {frameHistory.length > 0 && frameHistory.slice(-5).map((frame, idx) => (
+                                        <div key={idx} className="aspect-square rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-shadow">
+                                            <img src={frame} alt={`Test ${idx}`} className="w-full h-full object-cover" />
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
                     </div>
                 </div>
             )}
@@ -559,8 +682,9 @@ function AppContent() {
                 <button onClick={handleTrain} className="flex items-center gap-2 px-8 py-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-sm rounded-xl transition-all shadow-lg shadow-indigo-500/25 active:scale-[0.98]">
                     <span className="text-lg">▶</span> Train YOLO Model
                 </button>
-                <button className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-bold text-sm rounded-xl transition-all shadow-lg shadow-emerald-500/25 active:scale-[0.98]">
-                    <span className="text-lg">▶️</span> Start Live Detection
+                <button onClick={() => setIsAiSystemRunning(!isAiSystemRunning)} 
+                        className={`flex items-center gap-2 px-6 py-3 text-white font-bold text-sm rounded-xl transition-all shadow-lg active:scale-[0.98] ${isAiSystemRunning ? 'bg-amber-500 hover:bg-amber-400 shadow-amber-500/25' : 'bg-emerald-500 hover:bg-emerald-400 shadow-emerald-500/25'}`}>
+                    <span className="text-lg">{isAiSystemRunning ? '⏹️' : '▶️'}</span> {isAiSystemRunning ? 'Stop AI' : 'Start'}
                 </button>
             </div>
         </footer>

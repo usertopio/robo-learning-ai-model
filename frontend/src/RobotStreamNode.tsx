@@ -8,7 +8,7 @@ export default function RobotStreamNode({ id, data, selected }: any) {
     const { setNodes, setEdges } = useReactFlow();
     const { def } = data;
 
-    const [robotId, setRobotId] = useState('ROBOT_01');
+    const [robotId, setRobotId] = useState('WEBCAM_RAW');
     const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
 
     const imgRef = useRef<HTMLImageElement>(null);

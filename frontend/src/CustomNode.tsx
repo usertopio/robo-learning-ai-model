@@ -12,12 +12,25 @@ function getBadgeClass(color: string) {
     return map[color] || 'bg-slate-200 text-slate-800';
 }
 
+function getBlockIcon(blockId: string, defaultIcon: string) {
+    // Map for blocks with problematic emoji encoding
+    const iconMap: Record<string, string> = {
+        'ai-detector': '🤖',  // Robot
+        'webcam-input': '📹',  // Video camera
+        'robot-stream': '🎥',  // Movie camera  
+        'roboflow-dataset': '📚',  // Books/library
+    };
+    return iconMap[blockId] || defaultIcon;
+}
+
 export default function CustomNode({ id, data, selected }: any) {
     const { setNodes, setEdges } = useReactFlow();
     const { def } = data;
     if (!def) return null;
 
     const [cameraStatus, setCameraStatus] = useState<Record<number, string>>({});
+    const [isTraining, setIsTraining] = useState(false);
+    const [trainingStatus, setTrainingStatus] = useState<'idle' | 'training' | 'complete' | 'error'>('idle');
 
     const onDelete = () => {
         setNodes((nodes) => nodes.filter((node) => node.id !== id));
@@ -32,6 +45,12 @@ export default function CustomNode({ id, data, selected }: any) {
                     const newParams = [...newDef.params];
                     newParams[idx] = { ...newParams[idx], [key]: newValue };
                     newDef.params = newParams;
+
+                    // Emit to system for AI Sync
+                    window.dispatchEvent(new CustomEvent('ai-param-update', { 
+                        detail: { nodeId: id, paramIdx: idx, key, value: newValue, label: newParams[idx].label } 
+                    }));
+
                     return { ...node, data: { ...node.data, def: newDef } };
                 }
                 return node;
@@ -50,6 +69,56 @@ export default function CustomNode({ id, data, selected }: any) {
         }
     };
 
+    const handleStartTraining = async () => {
+        if (def.id !== 'train-engine') return;
+        
+        // Get current mode and other parameters from the node
+        const modeParam = def.params.find((p: any) => p.label === 'Operation Mode');
+        const mode = modeParam?.value || 'Inference (Testing)';
+        
+        // Extract training hyperparameters
+        const hyperparams = def.params.reduce((acc: any, p: any) => {
+            if (p.label === 'Epochs') acc.epochs = p.value;
+            if (p.label === 'Initial LR (lr0)') acc.lr0 = p.value;
+            if (p.label === 'Batch Size') acc.batch_size = p.value?.split(' ')[0] || 16;
+            if (p.label === 'Weight Decay') acc.weight_decay = p.value;
+            if (p.label === 'Optimizer Type') acc.optimizer_type = p.value?.split(' ')[0] || 'AdamW';
+            if (p.label === 'Image Size (imgsz)') acc.imgsz = p.value;
+            return acc;
+        }, {});
+
+        setIsTraining(true);
+        setTrainingStatus('training');
+
+        try {
+            const response = await fetch('http://localhost:3000/api/train/start', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('token')}`
+                },
+                body: JSON.stringify({
+                    mode,
+                    hyperparams
+                })
+            });
+
+            const result = await response.json();
+            if (response.ok) {
+                setTrainingStatus('complete');
+                setTimeout(() => setTrainingStatus('idle'), 3000);
+            } else {
+                setTrainingStatus('error');
+                console.error('Training error:', result.error);
+            }
+        } catch (err: any) {
+            setTrainingStatus('error');
+            console.error('Training request failed:', err);
+        } finally {
+            setIsTraining(false);
+        }
+    };
+
     const hasTargetHandle = def.color !== 'blue'; // ทุกอันรับ Input ได้ยกเว้นสีบล็อก Input (Blue)
     const hasSourceHandle = def.color !== 'green' && def.color !== 'rose'; // ทุกอันส่ง Output ได้ ยกเว้นบล็อก Output (Green/Rose)
 
@@ -61,13 +130,13 @@ export default function CustomNode({ id, data, selected }: any) {
                 <Handle 
                     type="target" 
                     position={Position.Left} 
-                    className="w-4 h-4 bg-white dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-600 rounded-full hover:bg-indigo-500 hover:border-indigo-500 hover:scale-125 -left-2 transition-all" 
+                    className="w-20 h-20 bg-gradient-to-br from-indigo-400 to-indigo-600 dark:from-indigo-500 dark:to-indigo-700 border-4 border-white dark:border-slate-700 rounded-full hover:w-24 hover:h-24 hover:shadow-2xl hover:shadow-indigo-500/70 -left-10 transition-all shadow-xl cursor-grab active:cursor-grabbing" 
                 />
             )}
 
             <div className={`wb-header py-3.5 px-4 flex items-center justify-between rounded-t-2xl ${def.color}-header transition-colors border-b border-white/50 dark:border-slate-800/50`}>
                 <div className="flex items-center gap-3">
-                    <span className="text-2xl drop-shadow-md">{def.icon}</span>
+                    <span className="text-2xl drop-shadow-md">{getBlockIcon(def.id, def.icon)}</span>
                     <div className="pt-0.5">
                         <p className="text-sm font-bold text-slate-800 dark:text-slate-100 tracking-tight leading-tight">{def.name}</p>
                         <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mt-0.5 leading-tight">{def.subtitle}</p>
@@ -85,7 +154,7 @@ export default function CustomNode({ id, data, selected }: any) {
                 </div>
             </div>
             
-            <div className="wb-body p-4 text-xs text-slate-600 dark:text-slate-300 font-sans transition-colors bg-white dark:bg-slate-900/50 rounded-b-2xl">
+            <div className={`wb-body p-4 text-xs text-slate-600 dark:text-slate-300 font-sans transition-colors bg-white dark:bg-slate-900/50 rounded-b-2xl ${def.id === 'train-engine' ? '' : 'max-h-[500px] overflow-y-auto'}`}>
                 {def.params.map((p: any, idx: number) => {
                     if (p.type === 'slider') {
                         const step = p.step || 1;
@@ -306,6 +375,34 @@ export default function CustomNode({ id, data, selected }: any) {
 
                     return null;
                 })}
+                
+                {/* Training Start Button - สำหรับ Training Block เท่านั้น */}
+                {def.id === 'train-engine' && (
+                    <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-700">
+                        <button
+                            onClick={handleStartTraining}
+                            disabled={isTraining}
+                            className={`w-full py-2.5 px-3 text-xs font-bold rounded-lg transition-all shadow-md active:scale-[0.98] text-center ${
+                                isTraining || trainingStatus === 'training'
+                                    ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 cursor-wait opacity-80'
+                                    : trainingStatus === 'complete'
+                                    ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300'
+                                    : trainingStatus === 'error'
+                                    ? 'bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400'
+                                    : 'bg-amber-500 hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500 text-white shadow-amber-500/30'
+                            }`}
+                        >
+                            {isTraining || trainingStatus === 'training' 
+                                ? '⏳ Training...'
+                                : trainingStatus === 'complete'
+                                ? '✅ Training Complete'
+                                : trainingStatus === 'error'
+                                ? '❌ Training Failed'
+                                : '🎓 Start Training'
+                            }
+                        </button>
+                    </div>
+                )}
             </div>
 
 
@@ -314,7 +411,7 @@ export default function CustomNode({ id, data, selected }: any) {
                 <Handle 
                     type="source" 
                     position={Position.Right} 
-                    className="w-4 h-4 bg-white dark:bg-slate-800 border-2 border-slate-400 dark:border-slate-500 rounded-full hover:bg-indigo-500 hover:border-indigo-500 hover:scale-125 -right-2 transition-all shadow-sm" 
+                    className="w-20 h-20 bg-gradient-to-br from-emerald-400 to-emerald-600 dark:from-emerald-500 dark:to-emerald-700 border-4 border-white dark:border-slate-700 rounded-full hover:w-24 hover:h-24 hover:shadow-2xl hover:shadow-emerald-500/70 -right-10 transition-all shadow-xl cursor-grab active:cursor-grabbing" 
                 />
             )}
         </div>

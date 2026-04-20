@@ -45,29 +45,45 @@ export default function WebcamStreamNode({ id, data, selected }: any) {
         }
     }, [deviceId, stopStream]);
 
-    // Broadcast logic
+    // Broadcast logic — throttled to ~10 FPS for smooth performance
     useEffect(() => {
-        let frameId: number;
-        const capture = () => {
-            if (status === 'streaming' && videoRef.current && videoRef.current.readyState === 4) {
-                const canvas = canvasRef.current;
-                canvas.width = videoRef.current.videoWidth;
-                canvas.height = videoRef.current.videoHeight;
-                const ctx = canvas.getContext('2d');
-                if (ctx) {
-                    ctx.drawImage(videoRef.current, 0, 0);
-                    const base64 = canvas.toDataURL('image/jpeg', 0.6);
-                    window.dispatchEvent(new CustomEvent('live-monitor-frame', { detail: base64 }));
-                }
-            }
-            frameId = requestAnimationFrame(capture);
-        };
-        
+        let intervalId: ReturnType<typeof setInterval>;
+        const SEND_WIDTH = 320; // Downscale for socket transmission
+        const FPS = 10;
+
         if (status === 'streaming') {
-            frameId = requestAnimationFrame(capture);
+            intervalId = setInterval(() => {
+                if (!videoRef.current || videoRef.current.readyState < 4) return;
+
+                const video = videoRef.current;
+
+                // Full-res canvas for local preview event
+                const canvas = canvasRef.current;
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) return;
+                ctx.drawImage(video, 0, 0);
+
+                // High-quality frame for local Live-Monitor preview
+                const previewB64 = canvas.toDataURL('image/jpeg', 0.7);
+                window.dispatchEvent(new CustomEvent('live-monitor-frame', { detail: previewB64 }));
+
+                // Low-res frame for AI Bridge (saves bandwidth dramatically)
+                const ratio = video.videoHeight / video.videoWidth;
+                canvas.width = SEND_WIDTH;
+                canvas.height = Math.round(SEND_WIDTH * ratio);
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const smallB64 = canvas.toDataURL('image/jpeg', 0.5);
+
+                const socket = (window as any).socket;
+                if (socket) {
+                    socket.emit('video_frame_from_webcam', { image: smallB64 });
+                }
+            }, 1000 / FPS);
         }
         
-        return () => cancelAnimationFrame(frameId);
+        return () => clearInterval(intervalId);
     }, [status]);
 
     useEffect(() => {
