@@ -2,7 +2,7 @@ name: Model_CI
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
 
 jobs:
   build:
