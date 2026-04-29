@@ -1,5 +1,5 @@
 import pytest
-from ai_bridge import AIEngine
+from src.ai_bridge.engine import AIEngine
 
 def test_engine_initialization():
     """Test that the engine initializes with the correct default states."""
