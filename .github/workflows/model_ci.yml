@@ -51,7 +51,7 @@ jobs:
           push: true
           tags: |
             usertopio/robo-learn-ai-model:latest-amd64
-            usertopio/robo-learn-ai-model:0.0.0-amd64
+            usertopio/robo-learn-ai-model:1.0.0-amd64
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
