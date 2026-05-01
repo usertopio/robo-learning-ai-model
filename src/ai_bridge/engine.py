@@ -60,8 +60,14 @@ class AIEngine:
             l = label.lower()
             if 'conf' in l: self.config['confidence'] = float(value)
             elif 'iou' in l: self.config['iou'] = float(value)
-            elif 'model variant' in l: self.config['model_variant'] = value
-            elif 'bounding box' in l: 
+            elif 'model variant' in l or 'model version' in l: 
+                # Normalize variant names (e.g., 'YOLOv11-cls' -> 'yolo11n-cls.pt')
+                val = str(value).split(' ')[0].lower()
+                if 'cls' in val and 'n' not in val: val = val.replace('yolov11', 'yolo11n')
+                if 'seg' in val and 'n' not in val: val = val.replace('yolov11', 'yolo11n')
+                self.config['model_variant'] = val
+            elif 'weights source' in l: self.config['weights_source'] = value
+            elif 'bounding box' in l or 'show masks' in l: 
                 self.config['show_boxes'] = (str(value).lower() == 'true') if not isinstance(value, bool) else value
             elif 'labels' in l: 
                 self.config['show_labels'] = (str(value).lower() == 'true') if not isinstance(value, bool) else value
@@ -105,6 +111,7 @@ class AIEngine:
             t.start()
 
         @self.sio.on('update_search_classes')
+        @self.sio.on('ai_search_sync')
         def on_update_search_classes(data):
             if isinstance(data, str):
                 classes = [c.strip().lower() for c in data.split(',') if c.strip()]
@@ -113,6 +120,30 @@ class AIEngine:
 
     # -------------------------------------------------------
     def get_model(self):
+        source = self.config.get('weights_source', 'Pre-trained (COCO)')
+        
+        if 'My Custom Model' in source:
+            # Look for best.pt in the runs directory
+            custom_path = Path('runs/train/exp/weights/best.pt')
+            if not custom_path.exists():
+                # Try to find the latest run if 'exp' doesn't exist (YOLO auto-increments)
+                train_root = Path('runs/train')
+                if train_root.exists():
+                    runs = sorted([d for d in train_root.iterdir() if d.is_dir()], 
+                                 key=lambda x: x.stat().st_mtime, reverse=True)
+                    if runs:
+                        custom_path = runs[0] / 'weights' / 'best.pt'
+            
+            if custom_path.exists():
+                path_str = str(custom_path)
+                if path_str not in self.models:
+                    log(f"Loading CUSTOM weights: {path_str}")
+                    self.models[path_str] = YOLO(path_str)
+                return self.models[path_str]
+            else:
+                log("Custom weights (best.pt) not found, falling back to pre-trained.")
+
+        # Default to pre-trained
         variant = self.config['model_variant'].split(' ')[0].lower()
         if not variant.endswith('.pt'):
             variant += '.pt'
@@ -125,7 +156,7 @@ class AIEngine:
         nodes = self.current_flow.get('nodes', [])
         ids = [n.get('data', {}).get('def', {}).get('id') for n in nodes]
         has_input = any(x in ['webcam-input', 'robot-stream', 'test-image'] for x in ids)
-        has_model = any(x in ['yolo-model', 'inference', 'ai-detector'] for x in ids)
+        has_model = any(x in ['yolo-model', 'inference', 'ai-detector', 'image-classifier', 'instance-segmentor'] for x in ids)
         return has_input and has_model
 
     def encode_frame(self, frame, quality=70):
@@ -136,13 +167,29 @@ class AIEngine:
         detections = []
         names = model.names
         r = results[0]
-        if r.boxes is not None:
+
+        # 1. Handle Detection / Segmentation (Boxes)
+        if r.boxes is not None and len(r.boxes) > 0:
             for box in r.boxes:
                 cls_id = int(box.cls[0])
                 label = names.get(cls_id, str(cls_id))
                 conf = round(float(box.conf[0]), 3)
                 x1, y1, x2, y2 = [round(float(v), 1) for v in box.xyxy[0]]
+                # Format: [Label, Confidence, X1, Y1, X2, Y2]
                 detections.append([label, conf, x1, y1, x2, y2])
+        
+        # 2. Handle Classification (Probs)
+        elif r.probs is not None:
+            # Get top 5 classes
+            top5_idx = r.probs.top5
+            top5_conf = r.probs.top5conf
+            for i in range(len(top5_idx)):
+                cls_id = int(top5_idx[i])
+                label = names.get(cls_id, str(cls_id))
+                conf = round(float(top5_conf[i]), 3)
+                # Format for classification: [Label, Confidence, "-", "-", "-", "-"]
+                detections.append([label, conf, "-", "-", "-", "-"])
+
         return detections, names
 
     # -------------------------------------------------------
