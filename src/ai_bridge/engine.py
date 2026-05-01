@@ -50,7 +50,7 @@ class AIEngine:
         @self.sio.on('ai_system_sync')
         def on_system_sync(data):
             self.is_running = data.get('running', False)
-            log(f"System status: {'RUNNING' if self.is_running else 'STOPPED'}")
+            log(f"System status sync received: {'RUNNING' if self.is_running else 'STOPPED'}")
 
         @self.sio.on('ai_params_sync')
         def on_params_sync(data):
@@ -82,6 +82,7 @@ class AIEngine:
                 img_bytes = base64.b64decode(frame_str.split(',')[1])
                 nparr = np.frombuffer(img_bytes, np.uint8)
                 self.latest_frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                # log(f"Received frame from webcam: {len(frame_str)} chars") # Too noisy if logged every frame
             except Exception as e:
                 log(f"Frame decode error: {e}")
 
@@ -195,9 +196,12 @@ class AIEngine:
     # -------------------------------------------------------
     def run_inference(self):
         """Webcam / Robot stream inference loop."""
-        if not self.is_running or self.latest_frame is None:
+        if not self.is_running:
+            return
+        if self.latest_frame is None:
             return
         if not self.check_active_pipeline():
+            # log("Pipeline incomplete, skipping inference") # Also noisy
             return
         try:
             model = self.get_model()
