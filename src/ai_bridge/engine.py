@@ -9,7 +9,6 @@ from pathlib import Path
 from ultralytics import YOLO
 
 
-# Utility for unbuffered logging
 def log(msg):
     print(f"[AI] {msg}", flush=True)
 
@@ -22,6 +21,8 @@ class AIEngine:
         self.current_flow = {"nodes": [], "edges": []}
         self.latest_frame = None
         self.training_active = False
+        self._frame_lock = threading.Lock()
+        self._models_lock = threading.Lock()
 
         self.config = {
             'confidence': 0.25,
@@ -60,28 +61,37 @@ class AIEngine:
             l = label.lower()
             if 'conf' in l: self.config['confidence'] = float(value)
             elif 'iou' in l: self.config['iou'] = float(value)
-            elif 'model variant' in l or 'model version' in l: 
-                # Normalize variant names (e.g., 'YOLOv11-cls' -> 'yolo11n-cls.pt')
+            elif 'image size' in l:
+                try: self.config['imgsz'] = int(value)
+                except (ValueError, TypeError): pass
+            elif 'model variant' in l or 'model version' in l:
                 val = str(value).split(' ')[0].lower()
-                if 'cls' in val and 'n' not in val: val = val.replace('yolov11', 'yolo11n')
-                if 'seg' in val and 'n' not in val: val = val.replace('yolov11', 'yolo11n')
+                # yolov11 → yolo11, yolov8 stays as yolov8
+                if val.startswith('yolov11'):
+                    val = val.replace('yolov11', 'yolo11')
+                # inject 'n' size if missing (e.g. yolo11-cls → yolo11n-cls)
+                if 'cls' in val and not any(s in val for s in ['n-', 's-', 'm-', 'l-', 'x-']):
+                    val = val.replace('yolo11', 'yolo11n').replace('yolov8', 'yolov8n')
+                if 'seg' in val and not any(s in val for s in ['n-', 's-', 'm-', 'l-', 'x-']):
+                    val = val.replace('yolo11', 'yolo11n').replace('yolov8', 'yolov8n')
                 self.config['model_variant'] = val
             elif 'weights source' in l: self.config['weights_source'] = value
-            elif 'bounding box' in l or 'show masks' in l: 
+            elif 'bounding box' in l or 'show masks' in l:
                 self.config['show_boxes'] = (str(value).lower() == 'true') if not isinstance(value, bool) else value
-            elif 'labels' in l: 
+            elif 'labels' in l:
                 self.config['show_labels'] = (str(value).lower() == 'true') if not isinstance(value, bool) else value
 
         @self.sio.on('ai_webcam_frame')
         def on_webcam_frame(data):
             try:
-                # Handle data as string (raw base64) or dict (with 'image' key)
                 frame_str = data.get('image') if isinstance(data, dict) else data
                 if not frame_str or ',' not in frame_str:
                     return
                 img_bytes = base64.b64decode(frame_str.split(',')[1])
                 nparr = np.frombuffer(img_bytes, np.uint8)
-                self.latest_frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                with self._frame_lock:
+                    self.latest_frame = frame
             except Exception as e:
                 log(f"Frame decode error: {e}")
 
@@ -121,42 +131,41 @@ class AIEngine:
     # -------------------------------------------------------
     def get_model(self):
         source = self.config.get('weights_source', 'Pre-trained (COCO)')
-        
+
         if 'My Custom Model' in source:
-            # Look for best.pt in the runs directory
             custom_path = Path('runs/train/exp/weights/best.pt')
             if not custom_path.exists():
-                # Try to find the latest run if 'exp' doesn't exist (YOLO auto-increments)
                 train_root = Path('runs/train')
                 if train_root.exists():
-                    runs = sorted([d for d in train_root.iterdir() if d.is_dir()], 
-                                 key=lambda x: x.stat().st_mtime, reverse=True)
+                    runs = sorted([d for d in train_root.iterdir() if d.is_dir()],
+                                  key=lambda x: x.stat().st_mtime, reverse=True)
                     if runs:
                         custom_path = runs[0] / 'weights' / 'best.pt'
-            
+
             if custom_path.exists():
                 path_str = str(custom_path)
-                if path_str not in self.models:
-                    log(f"Loading CUSTOM weights: {path_str}")
-                    self.models[path_str] = YOLO(path_str)
-                return self.models[path_str]
+                with self._models_lock:
+                    if path_str not in self.models:
+                        log(f"Loading CUSTOM weights: {path_str}")
+                        self.models[path_str] = YOLO(path_str)
+                    return self.models[path_str]
             else:
                 log("Custom weights (best.pt) not found, falling back to pre-trained.")
 
-        # Default to pre-trained
         variant = self.config['model_variant'].split(' ')[0].lower()
         if not variant.endswith('.pt'):
             variant += '.pt'
-        if variant not in self.models:
-            log(f"Loading weights: {variant}")
-            self.models[variant] = YOLO(variant)
-        return self.models[variant]
+        with self._models_lock:
+            if variant not in self.models:
+                log(f"Loading weights: {variant}")
+                self.models[variant] = YOLO(variant)
+            return self.models[variant]
 
     def check_active_pipeline(self):
         nodes = self.current_flow.get('nodes', [])
         ids = [n.get('data', {}).get('def', {}).get('id') for n in nodes]
         has_input = any(x in ['webcam-input', 'robot-stream', 'test-image'] for x in ids)
-        has_model = any(x in ['yolo-model', 'inference', 'ai-detector', 'image-classifier', 'instance-segmentor'] for x in ids)
+        has_model = any(x in ['yolo-model', 'inference', 'ai-detector', 'image-classifier'] for x in ids)
         return has_input and has_model
 
     def encode_frame(self, frame, quality=70):
@@ -195,22 +204,26 @@ class AIEngine:
     # -------------------------------------------------------
     def run_inference(self):
         """Webcam / Robot stream inference loop."""
-        if not self.is_running or self.latest_frame is None:
+        if not self.is_running:
+            return
+        with self._frame_lock:
+            frame = self.latest_frame
+        if frame is None:
             return
         if not self.check_active_pipeline():
             return
         try:
             model = self.get_model()
             results = model.predict(
-                source=self.latest_frame,
+                source=frame,
                 conf=self.config['confidence'],
                 iou=self.config['iou'],
                 imgsz=self.config['imgsz'],
                 verbose=False
             )
             
-            # Strict filtering: if target_classes is set, filter the boxes
-            if self.config['target_classes']:
+            # Strict filtering: if target_classes is set AND we have boxes
+            if self.config['target_classes'] and results[0].boxes is not None:
                 # Find indices of boxes that match our target classes
                 indices = []
                 for i, box in enumerate(results[0].boxes):
@@ -220,7 +233,6 @@ class AIEngine:
                         indices.append(i)
                 
                 # Apply filtering to the results object
-                # If no matches, this will result in empty boxes
                 results[0].boxes = results[0].boxes[indices]
 
             annotated = results[0].plot(
@@ -474,21 +486,32 @@ class AIEngine:
 
     # -------------------------------------------------------
     def start(self):
-        try:
-            self.sio.connect(self.server_url)
-            log(f"AI Bridge active on {self.server_url}")
-            while True:
-                if self.is_running:
-                    self.run_inference()
-                else:
-                    time.sleep(0.5)
-        except KeyboardInterrupt:
-            log("Shutting down...")
-        except Exception as e:
-            log(f"Fatal error: {e}")
-            time.sleep(5)
-            self.start()
+        retry_delay = 5
+        max_delay = 60
+        while True:
+            try:
+                log(f"Connecting to {self.server_url}...")
+                self.sio.connect(self.server_url)
+                log(f"AI Bridge active on {self.server_url}")
+                retry_delay = 5
+                while True:
+                    if self.is_running:
+                        self.run_inference()
+                    else:
+                        time.sleep(0.5)
+            except KeyboardInterrupt:
+                log("Shutting down...")
+                break
+            except Exception as e:
+                log(f"Connection error: {e}. Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_delay)
+                try:
+                    self.sio.disconnect()
+                except Exception:
+                    pass
 
 if __name__ == "__main__":
-    engine = AIEngine('http://localhost:3000')
+    import os as _os
+    engine = AIEngine(_os.getenv('BACKEND_URL', 'http://localhost:3000'))
     engine.start()
